@@ -1,0 +1,25 @@
+layer {
+  name: "data"
+  type: "MemoryData"
+  top: "data"
+  top: "datai"
+  memory_data_param {
+    dim: 1
+    dim: 1
+    dim: 100
+    dim: 100
+    dim: 100
+  }
+}
+layer {
+  name: "silence"
+  type: "Silence"
+  bottom: "datai"
+}
+layer {
+  name: "prob"
+  type: "Sigmoid"
+  bottom: "data"
+  top: "prob"
+}
+
