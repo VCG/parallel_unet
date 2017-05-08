@@ -58,7 +58,7 @@ layer {
   bottom: "nhoodi"
 }
 layer {
-  name: "SliceVolume_ZYX"
+  name: "SliceVolume"
   type: "Python"
   bottom: "data"
   top: "data_XY"
@@ -856,12 +856,6 @@ layer {
   }
 }
 layer {
-  name: "Sigmoid_XY"
-  type: "Sigmoid"
-  bottom: "Convolution_XY_18"
-  top: "Convolution_XY_18"
-}
-layer {
   name: "Convolution_YZ_19"
   type: "Convolution"
   bottom: "data_YZ"
@@ -1646,12 +1640,6 @@ layer {
     dilation: 1
     dilation: 1
   }
-}
-layer {
-  name: "Sigmoid_YZ"
-  type: "Sigmoid"
-  bottom: "Convolution_YZ_36"
-  top: "Convolution_YZ_36"
 }
 layer {
   name: "Convolution_ZX_37"
@@ -2440,12 +2428,6 @@ layer {
   }
 }
 layer {
-  name: "Sigmoid_ZX"
-  type: "Sigmoid"
-  bottom: "Convolution_ZX_54"
-  top: "Convolution_ZX_54"
-}
-layer {
   name: "TransformVolumes_ZYX"
   type: "Python"
   bottom: "Convolution_XY_18"
@@ -2489,6 +2471,12 @@ layer {
   }
 }
 layer {
+  name: "Sigmoid_XY"
+  type: "Sigmoid"
+  bottom: "Convolution_XY_55"
+  top: "Convolution_XY_55"
+}
+layer {
   name: "Convolution_YZ_56"
   type: "Convolution"
   bottom: "Python2"
@@ -2516,6 +2504,12 @@ layer {
     dilation: 1
     dilation: 1
   }
+}
+layer {
+  name: "Sigmoid_YZ"
+  type: "Sigmoid"
+  bottom: "Convolution_YZ_56"
+  top: "Convolution_YZ_56"
 }
 layer {
   name: "Convolution_ZX_57"
@@ -2547,6 +2541,12 @@ layer {
   }
 }
 layer {
+  name: "Sigmoid_ZX"
+  type: "Sigmoid"
+  bottom: "Convolution_ZX_57"
+  top: "Convolution_ZX_57"
+}
+layer {
   name: "Concat1"
   type: "Concat"
   bottom: "Convolution_XY_55"
@@ -2556,7 +2556,7 @@ layer {
 }
 layer {
   name: "loss"
-  type: "ParallelMalisLoss"
+  type: "MalisLoss"
   bottom: "Concat1"
   bottom: "label"
   bottom: "components"
