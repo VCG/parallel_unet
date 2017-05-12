@@ -9,14 +9,13 @@ import math, copy
 import multiprocessing
 from Crypto.Random.random import randint
 from functools import partial
-from copy import deepcopy
-from slicevolume_layer import SliceVolumeLayer
-from transformnet_layer import TransformNetLayer
 
 # Import pycaffe
 import caffe
 from caffe import layers as L, params as P, to_proto
 from caffe.proto import caffe_pb2
+from slicer_layer import SlicerLayer
+from transformer_layer import TransformerLayer
 
 # General variables
 # Size of a float variable in bytes
@@ -161,17 +160,7 @@ class NetworkGenerator:
     def __init__(self, netconf, mode):
         self.netconf = copy.deepcopy(netconf)
         self.mode = copy.deepcopy(mode)
-        self.reset()        
-
-    def reset(self):
-        self.net_name = ''
-        self.deconvolutions = []
-        self.convolutions = []
-        self.poolings = []
-        self.relus = []
-        self.sigmoids = []
-        self.mergecrops = []
-    
+        
     def compute_memory_aux(self, shape_arr):
         memory = 0
         for i in range(0,len(shape_arr)):
@@ -206,22 +195,17 @@ class NetworkGenerator:
         return shape_arr
     
     def data_layer(self, shape):
-        data, label = L.MemoryData(dim=shape, ntop=2) #,name=self.data_name())
+        data, label = L.MemoryData(dim=shape, ntop=2)
         return data, label
 
     def deconv_relu(self, run_shape, bottom, num_output, kernel_size=[3], stride=[1], pad=[0], group=1, weight_std=0.01):
         update = RunShapeUpdater()
-        deconv = self.add_deconv(bottom, convolution_param=dict(kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
+        deconv = L.Deconvolution(bottom, convolution_param=dict(kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
                                     num_output=num_output, pad=pad, group=group,
                                     weight_filler=dict(type='gaussian', std=weight_std),
                                     bias_filler=dict(type='constant')), param=[dict(lr_mult=1),dict(lr_mult=2)])
-
-        deconv.name = 'Deconvolution%s%d'%(self.net_name, len(self.deconvolutions) + 1)
-        self.deconvolutions.append( decond )
-
-        relu = self.add_relu(deconv, in_place=True, negative_slope=self.netconf.relu_slope)
-        relu.name = 'ReLu%s%d'%(self.net_name, len(self.relus + 1))
-        self.relus.append( relu )    
+        
+        relu = L.ReLU(deconv, in_place=True, negative_slope=self.netconf.relu_slope)
         last = relu
         
         if (self.netconf.dropout > 0):
@@ -254,50 +238,16 @@ class NetworkGenerator:
         
         return deconv, last
 
-    def add_sigmoid(self,):
-        sigmoid = L.Sigmoid(last_blob, ntop=1)
-        sigmoid.name = 'Sigmoid_%s_%d'%(self.net_name, len(self.sigmoids)+1)
-        self.sigmoids.append( sigmoid )
-        return sigmoid
-
-    def add_conv(self, bottom, kernel_size, stride, dilation, num_output, pad, group, param, weight_filler, bias_filler ):
-
-        name = name = 'Convolution_%s_%d'%(self.net_name, len(self.convolutions)+1)
-        for i in range(len(param)):
-            param[i]['name'] = '%s_%s'%(name, param[i]['name'])
-
-        conv = L.Convolution(bottom, kernel_size=kernel_size, stride=stride, dilation=dilation,
-                                    num_output=num_output, pad=pad, group=group,
-                                    param=param, weight_filler=weight_filler, bias_filler=bias_filler)
-        conv.name = name #'Convolution_%s_%d'%(self.net_name, len(self.convolutions)+1)
-        self.convolutions.append( conv )
-        return conv
-
-    def add_relu(self, prev, in_place, negative_slope):
-        relu = L.ReLU(prev, in_place=True, negative_slope=self.netconf.relu_slope)
-        relu.name = 'ReLu_%s_%d'%(self.net_name, len(self.relus)+1)
-        self.relus.append( relu )
-        return relu
-
-    def conv(self, run_shape, bottom, num_output, kernel_size=[3], stride=[1], pad=[0], group=1, weight_std=0.01):
-
-        conv = self.add_conv(bottom, kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
-                                    num_output=num_output, pad=pad, group=group,
-                                    param=[dict(name='lr_mult1',lr_mult=1),dict(name='lr_mult2', lr_mult=2)],
-                                    weight_filler=dict(type='gaussian', std=weight_std),
-                                    bias_filler=dict(type='constant'))#, name=self.convolution_name())
-        return conv
-
     def conv_relu(self, run_shape, bottom, num_output, kernel_size=[3], stride=[1], pad=[0], group=1, weight_std=0.01):
         update = RunShapeUpdater()
-               
-        conv = self.add_conv(bottom, kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
+                
+        conv = L.Convolution(bottom, kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
                                     num_output=num_output, pad=pad, group=group,
-                                    param=[dict(name='lr_mult1',lr_mult=1),dict(name='lr_mult2',lr_mult=2)],
+                                    param=[dict(lr_mult=1),dict(lr_mult=2)],
                                     weight_filler=dict(type='gaussian', std=weight_std),
-                                    bias_filler=dict(type='constant'))#, name=self.convolution_name())
-       
-        relu = self.add_relu(conv, in_place=True, negative_slope=self.netconf.relu_slope)
+                                    bias_filler=dict(type='constant'))
+        
+        relu = L.ReLU(conv, in_place=True, negative_slope=self.netconf.relu_slope)
         last = relu
         
         if (self.netconf.dropout > 0):
@@ -348,18 +298,12 @@ class NetworkGenerator:
         update.shape_update = lambda x: [x[i] + 2*pad[min(i,len(pad)-1)] - (kernel_size[min(i,len(kernel_size)-1)] - 1) * (run_shape[-1].dilation[i]) for i in range(0, len(x))]
         self.update_shape(run_shape, update)
         
-        return self.add_conv(bottom, kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
+        return L.Convolution(bottom, kernel_size=kernel_size, stride=stride, dilation=run_shape[-1].dilation,
                                     num_output=num_output, pad=pad, group=group,
-                                    param=[dict(name='lr_mult1',lr_mult=1),dict(name='lr_mult2',lr_mult=2)],
+                                    param=[dict(lr_mult=1),dict(lr_mult=2)],
                                     weight_filler=dict(type='gaussian', std=weight_std),
                                     bias_filler=dict(type='constant'))
-   
-    def add_pooling(self, bottom, pool, kernel_size, stride, pad, dilation):
-        pooling = L.Pooling(bottom, pool=P.Pooling.MAX, kernel_size=kernel_size, stride=stride, pad=pad, dilation=dilation)
-        pooling.name = 'Pooling_%s_%d'%(self.net_name, len(self.poolings)+1)
-        self.poolings.append( pooling )
-        return pooling
-  
+    
     def max_pool(self, run_shape, bottom, kernel_size=[2], stride=[2], pad=[0], dilation=[1]):
         update = RunShapeUpdater()
 
@@ -377,15 +321,8 @@ class NetworkGenerator:
             update.shape_update = lambda x: [x[i] - (kernel_size[min(i,len(kernel_size)-1)] - 1) * (run_shape[-1].dilation[i]) for i in range(0,len(run_shape[-1].shape))]
         self.update_shape(run_shape, update)
     
-        return self.add_pooling(bottom, pool=P.Pooling.MAX, kernel_size=kernel_size, stride=stride, pad=pad, dilation=dilation)
-   
-    def add_deconv(self, bottom, convolution_param, param):
-        name = 'Deconvolution_%s_%d'%(self.net_name, len(self.deconvolutions)+1)
-        deconv = L.Deconvolution(bottom, convolution_param=convolution_param, param=param)
-        deconv.name = name
-        self.deconvolutions.append( deconv )
-        return deconv
-
+        return L.Pooling(bottom, pool=P.Pooling.MAX, kernel_size=kernel_size, stride=stride, pad=pad, dilation=dilation)
+    
     def upconv(self, run_shape, bottom, num_output_dec, num_output_conv, weight_std=0.01, kernel_size=[2], stride=[2]):
         # Shape update rules
         update = RunShapeUpdater()
@@ -393,7 +330,7 @@ class NetworkGenerator:
         update.shape_update = lambda x: [kernel_size[min(i,len(kernel_size)-1)] * x[i] for i in range(0,len(run_shape[-1].shape))]
         self.update_shape(run_shape, update)
         
-        deconv = self.add_deconv(bottom, convolution_param=dict(num_output=num_output_dec, kernel_size=kernel_size, stride=stride, pad=[0], dilation=[1], group=num_output_dec,
+        deconv = L.Deconvolution(bottom, convolution_param=dict(num_output=num_output_dec, kernel_size=kernel_size, stride=stride, pad=[0], dilation=[1], group=num_output_dec,
                                                                 weight_filler=dict(type='constant', value=1), bias_term=False),
                                  param=dict(lr_mult=0, decay_mult=0))
     
@@ -411,18 +348,12 @@ class NetworkGenerator:
         update.shape_update = lambda x: [x[i] for i in range(0,len(run_shape[-1].shape))]
         self.update_shape(run_shape, update)
     
-        conv = self.add_conv(deconv, num_output=num_output_conv, kernel_size=[1], stride=[1], pad=[0], dilation=[1], group=1,
-                                param=[dict(name='lr_mult1', lr_mult=1),dict(name='lr_mult2', lr_mult=2)],
+        conv = L.Convolution(deconv, num_output=num_output_conv, kernel_size=[1], stride=[1], pad=[0], dilation=[1], group=1,
+                                param=[dict(lr_mult=1),dict(lr_mult=2)],
                                 weight_filler=dict(type='gaussian', std=weight_std),
                                 bias_filler=dict(type='constant'))
         return deconv, conv
-   
-    def add_mergecrop(self, bottom_a, bottom_b, forward, backward):
-        mergecrop = L.MergeCrop(bottom_a, bottom_b, forward=forward, backward=backward )
-        mergecrop.name = 'MergeCrop_%s_%d'%(self.net_name, len(self.mergecrops) + 1)
-        self.mergecrops.append( mergecrop )
-        return mergecrop
- 
+    
     def mergecrop(self, run_shape, run_shape_b_index, bottom_a, bottom_b):
         run_shape_a = run_shape[-1]
         run_shape_b = run_shape[run_shape_b_index]
@@ -430,7 +361,7 @@ class NetworkGenerator:
         update = RunShapeUpdater()
         update.fmaps_update = lambda x: run_shape_a.fmaps + run_shape_b.fmaps
         self.update_shape(run_shape, update)
-        return self.add_mergecrop(bottom_a, bottom_b, forward=[1,1], backward=[1,1])
+        return L.MergeCrop(bottom_a, bottom_b, forward=[1,1], backward=[1,1])
     
     def weight_filler(self, shape, ksizes):
         return math.sqrt(2.0/float(shape.fmaps*reduce(lambda a,b: a * b, [abs(ksizes[min(i, len(ksizes)-1)]) for i in range(0,len(shape.shape))])))
@@ -467,10 +398,7 @@ class NetworkGenerator:
             blobs = blobs + [relu]
         
         return blobs, run_shape
-    
-    #implement_usknet(self, netconf, net, run_shape, blobs, fmaps_start, fmaps_end):
-    #conv, relu = self.conv_relu(run_shape, blobs[-1], fmaps, kernel_size=convolution_config[j], weight_std=self.weight_filler(run_shape[-1], convolution_config[j]))
-    #blobs = blobs + [relu]           
+                
     
     def implement_usknet(self, netconf, net, run_shape, blobs, fmaps_start, fmaps_end): 
         if self.mode == caffe_pb2.TEST:
@@ -489,7 +417,7 @@ class NetworkGenerator:
                     for j in range(0,len(convolution_config)):
                         conv, relu = self.conv_relu(run_shape, blobs[-1], fmaps, kernel_size=convolution_config[j], weight_std=self.weight_filler(run_shape[-1], convolution_config[j]))
                         blobs = blobs + [relu]
-                        print('c:',j, 'ks:', convolution_config[j], 'fm:', fmaps, 'wstd:', self.weight_filler(run_shape[-1], convolution_config[j]) )
+                        print('c:',j)
     
                     mergecrop_tracker += [[len(blobs)-1,len(run_shape)-1]]
                     pool = self.max_pool(run_shape, blobs[-1], kernel_size=unetconf.unet_downsampling_strategy[i], stride=unetconf.unet_downsampling_strategy[i])
@@ -527,7 +455,8 @@ class NetworkGenerator:
                     
                     pre_merge_blobs = [blobs[mergecrop_tracker[unetconf.unet_depth - i - 1][0]]]
                     pre_merge_shape_index = mergecrop_tracker[unetconf.unet_depth - i - 1][1]
-
+                    
+                    # Insert SK-Net in the mergecrop bridge
                     if (len(unetconf.sk_netconfs) > unetconf.unet_depth - i - 1 and unetconf.sk_netconfs[unetconf.unet_depth - i - 1] != None):
                         sknet_conf = copy.deepcopy(unetconf.sk_netconfs[unetconf.unet_depth - i - 1])
                         sknet_conf.sknet_padding = [run_shape[pre_merge_shape_index].shape[i] - run_shape[-1].shape[i] for i in range(0,len(run_shape[-1].shape))]
@@ -553,7 +482,6 @@ class NetworkGenerator:
                         else:
                             conv, relu = self.conv_relu(run_shape, blobs[-1], fmaps, kernel_size=convolution_config[j], weight_std=self.weight_filler(run_shape[-1], convolution_config[j]))
                             blobs = blobs + [relu]
-                            print('c:',j, 'ks:', convolution_config[j], 'fm:', fmaps, 'wstd:', self.weight_filler(run_shape[-1], convolution_config[j]) )
                               
         conv = self.convolution(run_shape, blobs[-1], fmaps_end, kernel_size=[1], weight_std=self.weight_filler(run_shape[-1], [1]))
         blobs = blobs + [conv]
@@ -731,7 +659,59 @@ def compute_valid_io_shapes(netconf, netmode, min_output_shape, max_output_shape
         print("Current shape: %s, %s, %s" % (shape_idx, valid_in_shapes[shape_idx], upper_limit))
         
     return valid_in_shapes, valid_out_shapes, max_fmap_counts
-    
+
+
+def implement_parallel_unets(netconf, netgen, net, net_mode):
+
+    offsets    = [0,0,0]
+    offsets[0] = (netconf.input_shape3d[-3] - netconf.output_shape3d[-3])/2 -1
+    offsets[1] = (netconf.input_shape3d[-2] - netconf.output_shape3d[-2])/2 -1
+    offsets[2] = (netconf.input_shape3d[-1] - netconf.output_shape3d[-1])/2 -1
+    sizes      = netconf.output_shape3d
+    param      = {"offsets":offsets, "sizes": sizes}
+    param_json = json.dumps(param)
+
+    net_names = ['xy', 'yz', 'zx']
+   
+    dims = len(netconf.input_shape)
+    blobs = []
+    net_heads = []
+    data_blobs = L.Python( net.data, ntop=3, name='Slicer', python_param={'module':'slicer_layer', 'layer':'SlicerLayer', 'param_str':param_json})
+    blobs = blobs + [data_blobs]
+ 
+    for name, data_blob in zip(net_names, data_blobs):
+        data_blob.name = 'data_%s'%(name)
+         
+        run_shape = RunShape(None, None)
+        run_shape.shape = netconf.input_shape
+        run_shape.dilation = [1 for i in range(0,dims)]
+        run_shape.fmaps = 1
+
+        run_shape_in = [run_shape]
+        run_shape_out = run_shape_in
+
+        net_blobs, run_shape_out = netgen.implement_usknet(netconf, net, run_shape_out, [data_blob], netconf.fmap_start, netconf.fmap_output)
+        blobs = blobs + net_blobs
+        last_blob = blobs[-1]
+
+        if net_mode == caffe_pb2.TRAIN:
+            last_blob = L.Sigmoid(last_blob, in_place=True)
+            
+        net_heads = net_heads + [last_blob]
+
+    trans_blobs = []
+    if net_mode == caffe_pb2.TRAIN:
+        pred_blob, enable_blob = L.Python( *net_heads, ntop=2, name='Transformer', python_param={'module':'transformer_layer', 'layer':'TransformerLayer', 'param_str':param_json })
+        trans_blobs = trans_blobs + [enable_blob] + [pred_blob]
+        enable_blob.name = 'enable'
+    else:
+        trans_blobs = L.Python( *net_heads, ntop=1, name='Transformer', python_param={'module':'transformer_layer', 'layer':'TransformerLayer', 'param_str':param_json })
+        trans_blobs = [trans_blobs]
+
+    trans_blobs[-1].name = 'prediction'
+    blobs = blobs + trans_blobs
+    return blobs
+
 
 def caffenet(netconf, netmode):
     # Start Caffe proto net
@@ -748,16 +728,27 @@ def caffenet(netconf, netmode):
     run_shape_in = [run_shape]
     run_shape_out = run_shape_in
 
+    offsets    = [0,0,0]
+    offsets[0] = (netconf.input_shape3d[-3] - netconf.output_shape3d[-3])/2 -1
+    offsets[1] = (netconf.input_shape3d[-2] - netconf.output_shape3d[-2])/2 -1
+    offsets[2] = (netconf.input_shape3d[-1] - netconf.output_shape3d[-1])/2 -1
+    sizes      = netconf.output_shape3d
+    param      = {"offsets":offsets, "sizes": sizes}
+    param_json = json.dumps(param)
+
     if netmode == caffe_pb2.TEST:
         netgen = NetworkGenerator(netconf, netmode);
 
-        net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape)
+        net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape3d)
         net.silence = L.Silence(net.datai, ntop=0)
         # Chained blob list to construct the network (forward direction)
         blobs = []
         # All networks start with data
-        blobs = blobs + [net.data]
-        blobs, run_shape_out = netgen.implement_usknet(netconf, net, run_shape_out, blobs, netconf.fmap_start, netconf.fmap_output)
+        #blobs = blobs + [net.data]
+
+        #blobs, run_shape_out = netgen.implement_usknet(netconf, net, run_shape_out, blobs, netconf.fmap_start, netconf.fmap_output)
+        net_blobs = implement_parallel_unets(netconf, netgen, net, netmode)
+        blobs = blobs + net_blobs
         last_blob = blobs[-1]
 
         # Implement the prediction layer
@@ -769,19 +760,11 @@ def caffenet(netconf, netmode):
             
         if netconf.loss_function == 'softmax':
             net.prob = L.Softmax(last_blob, ntop=1)
-
-        for i in range(0,len(run_shape_out)):
-            print("Shape: [%s]" % i)
-            run_shape_out[i].print()
-            
-        print("Max. memory requirements: %s B" % (netgen.compute_memory_buffers(run_shape_out)+netgen.compute_memory_weights(run_shape_out)+netgen.compute_memory_blobs(run_shape_out)))
-        print("Weight memory: %s B" % netgen.compute_memory_weights(run_shape_out))
-        print("Max. conv buffer: %s B" % netgen.compute_memory_buffers(run_shape_out))
         
     else:
         netgen = NetworkGenerator(netconf, netmode);
        
-        net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape)
+        net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape3d)
 
         if netconf.loss_function == 'malis':
             net.label, net.labeli = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
@@ -790,8 +773,8 @@ def caffenet(netconf, netmode):
             net.silence = L.Silence(net.datai, net.labeli, net.componentsi, net.nhoodi, ntop=0)
             
         if netconf.loss_function == 'euclid':
-            net.label, net.labeli = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
-            net.scale, net.scalei = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
+            net.label, net.labeli = netgen.data_layer([1]+[netconf.fmap_output3d]+netconf.output_shape3d)
+            net.scale, net.scalei = netgen.data_layer([1]+[netconf.fmap_output3d]+netconf.output_shape3d)
             net.silence = L.Silence(net.datai, net.labeli, net.scalei, ntop=0)
 
         if netconf.loss_function == 'softmax':
@@ -803,26 +786,40 @@ def caffenet(netconf, netmode):
         # Chained blob list to construct the network (forward direction)
         blobs = []
         # All networks start with data
-        blobs = blobs + [net.data]
+        #blobs = blobs + [net.data]
+
+        '''
+        nets_data = L.Python( net.data, ntop=1, name='Slicer', python_param={'module':'slicer_layer', 'layer':'SlicerLayer', 'param_str':param_json})
+        blobs = blobs + [nets_data]
+
         blobs, run_shape_out = netgen.implement_usknet(netconf, net, run_shape_out, blobs, netconf.fmap_start, netconf.fmap_output)
         last_blob = blobs[-1]
-     
-        for i in range(0,len(run_shape_out)):
-            print("Shape: [%s]" % i)
-            run_shape_out[i].print()
-            
-        print("Max. memory requirements: %s B" % (netgen.compute_memory_buffers(run_shape_out)+netgen.compute_memory_weights(run_shape_out)+2*netgen.compute_memory_blobs(run_shape_out)))
-        print("Weight memory: %s B" % netgen.compute_memory_weights(run_shape_out))
-        print("Max. conv buffer: %s B" % netgen.compute_memory_buffers(run_shape_out))
+
+        last_blob = L.Sigmoid(last_blob, in_place=True)
+        blobs = blobs + [last_blob]
+
+        trans_blob, gate_blob = L.Python( [last_blob], ntop=2, name='Transformer', python_param={'module':'transformer_layer', 'layer':'TransformerLayer', 'param_str':param_json })
+        trans_blob.name = 'prediction'
+        gate_blob.name = 'enable' 
+        blobs = blobs + [trans_blob] + [gate_blob]
+        '''
         
+        net_blobs = implement_parallel_unets(netconf, netgen, net, netmode)
+        blobs = blobs + net_blobs
+        last_blob = blobs[-1]
+
+        enable_blob = blobs[-2]
+        pred_blob = blobs[-1]
+
         # Implement the loss
         if netconf.loss_function == 'malis':       
             last_blob = L.Sigmoid(last_blob, in_place=True)
             net.loss = L.MalisLoss(last_blob, net.label, net.components, net.nhood, ntop=0)
         
         if netconf.loss_function == 'euclid':
-            last_blob = L.Sigmoid(last_blob, in_place=True)
-            net.loss = L.EuclideanLoss(last_blob, net.label, net.scale, ntop=0)
+            #last_blob = L.Sigmoid(last_blob, in_place=True)
+            #net.loss = L.EuclideanLoss(last_blob, net.label, net.scale, ntop=0)
+            net.loss = L.GatedEuclideanLoss(pred_blob, net.label, net.scale, enable_blob, ntop=0)
             
         if netconf.loss_function == 'softmax':
             net.loss = L.SoftmaxWithLoss(last_blob, net.label, ntop=0)
@@ -834,217 +831,4 @@ def caffenet(netconf, netmode):
 def create_nets(netconf):
     return (caffenet(netconf, caffe_pb2.TRAIN), caffenet(netconf, caffe_pb2.TEST))
 
-
-def create_parallel_nets(netgen, netconf, net, offsets, sizes, nout=1):
-    blobs = []
-
-    param = {"offsets":offsets, "sizes": sizes}
-    param_json = json.dumps(param)
-
-    data_slices = L.Python( net.data, ntop=3, name='SliceVolume', python_param={'module':'slicevolume_layer', 'layer':'SliceVolumeLayer', 'param_str':param_json})
-
-    # names of the 2D networks
-    net_names = ['xy', 'yz', 'zx']
-
-    last_blobs = []
-
-    # Create the three 2D networks
-    dims = 2
-    netconf2d = deepcopy( netconf )
-    netconf2d.fmap_output  = dims
-    netconf2d.input_shape  = netconf2d.input_shape[1:]
-    netconf2d.output_shape = netconf2d.output_shape[1:]
-
-    for name, data_slice in zip(net_names, data_slices):
-
-        # set the network name
-        netgen.net_name = name
-
-        data_slice.name = 'data_%s'%(name)
-
-        net_blobs = [ data_slice ]
-
-        run_shape = RunShape(None, None)
-        run_shape.shape = netconf2d.input_shape
-        run_shape.dilation = [1 for i in range(0,dims)]
-        run_shape.fmaps = 1
-
-        run_shape_in = [run_shape]
-        run_shape_out = run_shape_in
-
-        run_shape_in1 = [run_shape]
-        run_shape_out1 = run_shape_in1
-
-        net_blobs, run_shape_out = netgen.implement_usknet(netconf2d, net, run_shape_out, net_blobs, netconf2d.fmap_start, netconf2d.fmap_output)
-
-        last_blob = net_blobs[-1]
-
-        #if netconf2d.loss_function == 'malis' or netconf2d.loss_function == 'euclid':
-        #    last_blob = L.Sigmoid(last_blob, in_place=True, name='Sigmoid_%s'%(name))
-        #    last_blob.name = 'Sigmoid_%s'%(name)
-        #    net_blobs.append( last_blob )
-            
-        last_blob = net_blobs[-1]
-        blobs = blobs + net_blobs
-        last_blobs.append( last_blob )
-
-        #print_meminfo( run_shape_out, netgen )
-
-    nets = L.Python( *last_blobs, ntop=nout, name='TransformNet_zyx', python_param={'module':'transformnet_layer', 'layer':'TransformNetLayer', 'param_str':param_json })
-    #nets[-1].name = 'gateflag'
-    #nets[-2].name = 'data'
-    blobs += nets if nout > 1 else [nets]
-
-    # new - add convolutions
-    convs = []
-    dims = len(netconf.input_shape)
-    #run_shape = RunShape(None, None)
-    run_shape.shape = netconf.input_shape
-    run_shape.dilation = [1 for i in range(0,dims)]
-    run_shape.fmaps = 1
-    run_shape_out = [run_shape]
-
-    '''
-    for name, n in zip(net_names, nets):
-        netgen.net_name = name
-        last_blob = netgen.convolution(run_shape_out, [n], 1, kernel_size=[1])#, kernel_size=[1], weight_std=self.weight_filler(run_shape[-1], [1]))
-
-        if netconf2d.loss_function == 'malis' or netconf2d.loss_function == 'euclid':
-            blobs = blobs + [last_blob]
-            last_blob = L.Sigmoid(last_blob, in_place=True, name='Sigmoid_%s'%(name))
-            last_blob.name = 'Sigmoid_%s'%(name)
-            convs.append( last_blob )
-    concat = L.Concat( *convs )
-    blobs = blobs + [concat]
-    '''
-    return blobs
-
-
-def create_test_net(netconf):
-    netmode = caffe_pb2.TEST
-
-    # Start Caffe proto net
-    net = caffe.NetSpec()
-    # Specify input data structures
-
-    dims = len(netconf.input_shape)
-
-    run_shape = RunShape(None, None)
-    run_shape.shape = netconf.input_shape
-    run_shape.dilation = [1 for i in range(0,dims)]
-    run_shape.fmaps = 1
-
-    run_shape_in = [run_shape]
-    run_shape_out = run_shape_in
-
-    offsets = [0,0,0]
-    offsets[0] = (netconf.input_shape[-3] - netconf.output_shape[-3])/2
-    offsets[1] = (netconf.input_shape[-2] - netconf.output_shape[-2])/2
-    offsets[2] = (netconf.input_shape[-1] - netconf.output_shape[-1])/2
-    sizes      = netconf.output_shape
-
-    netgen = NetworkGenerator(netconf, netmode);
-
-    net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape)
-    net.silence = L.Silence(net.datai, ntop=0)
-    # Chained blob list to construct the network (forward direction)
-    blobs = []
-    # All networks start with data
-    blobs = blobs + [net.data]
-    #blobs, run_shape_out = netgen.implement_usknet(netconf, net, run_shape_out, blobs, netconf.fmap_start, netconf.fmap_output)
-    #blobs, last_blobs = create_parallel_nets( netconf, net, blobs )
-    nets_blobs = create_parallel_nets( netgen, netconf, net, offsets=offsets, sizes=sizes, nout=1 )
-    blobs = blobs + nets_blobs
-
-    last_blob = blobs[-1]
-    last_blob.name = 'TransformNet_zyx'
-
-    # Implement the prediction layer
-    if netconf.loss_function == 'malis':
-        net.prob = L.Sigmoid(last_blob, ntop=1)
-
-    if netconf.loss_function == 'euclid':
-        net.prob = L.Sigmoid(last_blob, ntop=1)
-
-    if netconf.loss_function == 'softmax':
-        net.prob = L.Softmax(last_blob, ntop=1)
-
-    return net.to_proto()
-
-
-def print_meminfo(run_shape_out, netgen):
-        for i in range(0,len(run_shape_out)):
-            print("Shape: [%s]" % i)
-            run_shape_out[i].print()
-
-        print("Max. memory requirements: %s B" % (netgen.compute_memory_buffers(run_shape_out)+netgen.compute_memory_weights(run_shape_out)+2*netgen.compute_memory_blobs(run_shape_out)))
-        print("Weight memory: %s B" % netgen.compute_memory_weights(run_shape_out))
-        print("Max. conv buffer: %s B" % netgen.compute_memory_buffers(run_shape_out))
-
-
-def create_train_net(netconf):
-    netmode = caffe_pb2.TRAIN
-
-    # Start Caffe proto net
-    net = caffe.NetSpec()
-
-    # Specify input data structures
-    dims = len(netconf.input_shape)
-
-    netgen = NetworkGenerator(netconf, netmode);
-
-    net.data, net.datai = netgen.data_layer([1]+[netconf.fmap_input]+netconf.input_shape)
-
-    if netconf.loss_function == 'malis':
-        net.label, net.labeli = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
-        net.components, net.componentsi = netgen.data_layer([1,1]+netconf.output_shape)
-        net.nhood, net.nhoodi = netgen.data_layer([1,1]+[netconf.fmap_output]+[3])
-        net.silence = L.Silence(net.datai, net.labeli, net.componentsi, net.nhoodi, ntop=0)
-
-    if netconf.loss_function == 'euclid':
-        net.label, net.labeli = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
-        net.scale, net.scalei = netgen.data_layer([1]+[netconf.fmap_output]+netconf.output_shape)
-        net.silence = L.Silence(net.datai, net.labeli, net.scalei, ntop=0)
-
-    if netconf.loss_function == 'softmax':
-        net.label, net.labeli = netgen.data_layer([1]+[1]+netconf.output_shape)
-        net.silence = L.Silence(net.datai, net.labeli, ntop=0)
-
-    # Start the actual network
-    # Chained blob list to construct the network (forward direction)
-    blobs = []
-
-    # All networks start with data
-    blobs = blobs + [net.data]
-
-    offsets = [0,0,0]
-    offsets[0] = (netconf.input_shape[-3] - netconf.output_shape[-3])/2
-    offsets[1] = (netconf.input_shape[-2] - netconf.output_shape[-2])/2
-    offsets[2] = (netconf.input_shape[-1] - netconf.output_shape[-1])/2
-    sizes      = netconf.output_shape
-
-    nets_blobs = create_parallel_nets( netgen, netconf, net, offsets=offsets, sizes=sizes, nout=2 )
-    blobs = blobs + nets_blobs
-
-    #last_blob = blobs[-1]
-    para_nets = blobs[-2]
-    gate_flag = blobs[-1]
-
-    para_nets.name = 'TransformNet_zyx'
-    gate_flag.name = 'GateFlag'
-
-    # Implement the loss
-    if netconf.loss_function == 'malis':
-        args = [para_nets] + [net.label, net.components, net.nhood] + [gate_flag]
-        net.loss = L.MalisLoss(*args, ntop=0)
-
-    if netconf.loss_function == 'euclid':
-        args = [para_nets] + [net.label, net.scale] + [gate_flag]
-        net.loss = L.GatedEuclideanLoss(*args, ntop=0)
-
-    if netconf.loss_function == 'softmax':
-        args = [para_nets, net.label, gate_flag]
-        net.loss = L.SoftmaxWithLoss(*args, top=0)
-
-    return net.to_proto()
 

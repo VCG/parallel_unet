@@ -1,9 +1,8 @@
 # Paths for download, compile and install
 #caffe_path = "../caffe-greentea/caffe"
 #malis_path = "../malis"
-caffe_path = "/opt/caffe"
-malis_path = "/opt/malis"
-
+caffe_path = "/home/caffe/sources/caffe"
+malis_path = "/home/caffe/sources/malis"
 
 # Depencency packages
 install_packages = True

@@ -9,13 +9,6 @@ from Crypto.Random.random import randint
 import numpy.random
 import pdb
 
-#<felix>
-key = 'GLOG_minloglevel'
-if not os.environ.get(key, ''):
-    os.environ[key] = '0'
-    print('setting GLOG_minloglevel: ', os.environ[key])
-#</felix>
-
 # Determine where PyGreentea is
 pygtpath = os.path.normpath(os.path.realpath(os.path.abspath(os.path.split(inspect.getfile(inspect.currentframe()))[0])))
 
@@ -111,13 +104,14 @@ class NetInputWrapper:
 
 # Transfer network weights from one network to another
 def net_weight_transfer(dst_net, src_net):
+    print('===>transfering weights...')
     # Go through all source layers/weights
     for layer_key in src_net.params:
         # Test existence of the weights in destination network
         if (layer_key in dst_net.params):
+            print('---', layer_key)
             # Copy weights + bias
             for i in range(0, min(len(dst_net.params[layer_key]), len(src_net.params[layer_key]))):
-                print('transfering weights for layer:', layer_key)
                 np.copyto(dst_net.params[layer_key][i].data, src_net.params[layer_key][i].data)
         
 class ClassWeight:
@@ -395,9 +389,6 @@ def augment_data_elastic(dataset,ncopy_per_dset):
 
     
 def slice_data(data, offsets, sizes):
-    #print('-----slice_data()-----')
-    #print('offsets:', offsets)
-    #print('sizes:', sizes)
 
     if (len(offsets) == 1):
         return data[offsets[0]:offsets[0] + sizes[0]]
@@ -455,11 +446,9 @@ def dump_feature_maps(net, folder):
 def get_net_input_specs(net, test_blobs = ['data', 'label', 'scale', 'label_affinity', 'affinty_edges']):
     
     shapes = []
-    print('get_net_input_specs')
     
     # The order of the inputs is strict in our network types
     for blob in test_blobs:
-        print(blob)
         if (blob in net.blobs):
             shapes += [[blob, np.shape(net.blobs[blob].data)]]
         
@@ -478,13 +467,15 @@ def get_spatial_io_dims(net):
     
     input_dims = list(shapes[0][1])[2:2+dims]
     output_dims = list(shapes[1][1])[2:2+dims]
+    #padding = [input_dims[i]-output_dims[i] for i in range(0,dims)]
 
-    print ('inputdims:', input_dims)
-    print ('outputdims:', output_dims)
-
-    padding = [input_dims[i]-output_dims[i] for i in range(0,dims)]
-    
-    
+    # felix addition
+    if len(input_dims) == 3 and len(input_dims) > len(output_dims):
+        offsets = output_dims + [output_dims[-1]]
+        padding = [input_dims[i]-offsets[i] for i in range(0,dims)]
+    else:
+        padding = [input_dims[i]-output_dims[i] for i in range(0,dims)]
+ 
     return input_dims, output_dims, padding
 
 def get_fmap_io_dims(net):
@@ -504,6 +495,7 @@ def get_fmap_io_dims(net):
 def get_net_output_specs(net):
     return np.shape(net.blobs['prob'].data)
 
+
 def process(net, data_arrays, shapes=None, net_io=None):    
     input_dims, output_dims, input_padding = get_spatial_io_dims(net)
     fmaps_in, fmaps_out = get_fmap_io_dims(net)
@@ -519,9 +511,9 @@ def process(net, data_arrays, shapes=None, net_io=None):
             
     dst = net.blobs['prob']
     dummy_slice = [0]
-   
+
     i_out = 0
- 
+    
     pred_arrays = []
     for i in range(0, len(data_arrays)):
         data_array = data_arrays[i]['data']
@@ -553,11 +545,19 @@ def process(net, data_arrays, shapes=None, net_io=None):
             net_io.setInputs([data_slice])
             net.forward_iters(output_dims[-1])
             output = dst.data[0].copy()
-            if i_out < 20: 
+
+            '''
+            if i_out < 5:
                 with h5py.File('output_%0d.h5'%(i_out), 'w') as f:
                     f.create_dataset('main', data=output)
                     print('saving output...%d', i_out)
-                i_out += 1
+
+                with h5py.File('data_%0d.h5'%(i_out), 'w') as f:
+                    f.create_dataset('main', data=data_slice)
+
+            i_out += 1
+            '''
+
             
             
             if dims==3:
@@ -679,7 +679,6 @@ class TestNetEvaluator:
 
 	    
     def evaluate(self, iteration):
-        print ('TestNetEvaluator.evaluate')
         # Test/wait if last test is done
         if not(self.thread is None):
             try:
@@ -687,7 +686,6 @@ class TestNetEvaluator:
             except:
                 self.thread = None
         # Weight transfer
-        print('transfer weights from the small network to the bigger network....')
         net_weight_transfer(self.test_net, self.train_net)
         # Run test
 	# # Toufiq -- debug check
@@ -710,25 +708,218 @@ def init_solver(solver_config, options):
         return (solver_inst, init_testnet(options.test_net, test_device=options.test_device))
     
 def init_testnet(test_net, trained_model=None, test_device=0):
+    print('--->init_testnet')
     caffe.set_mode_gpu()
+    print('--->selecting test device...', test_device)
     caffe.select_device(test_device, False)
+    print('--->going to create nets...')
     if(trained_model == None):
+        print('--->creating test net...')
         return caffe.Net(test_net, caffe.TEST)
     else:
+        print('--->creating test and train net...')
         return caffe.Net(test_net, trained_model, caffe.TEST)
 
-def train(solver, test_net, data_arrays, test_data_arrays, options):
-
-    # first select the device to train with
+    
+def oldtrain(solver, test_net, data_arrays, train_data_arrays, options):
     caffe.select_device(options.train_device, False)
 
-    # get the network from solver
+    print('====> in training....')
+    
+    net = solver.net
+    net.debug_info = True
+    
+    #pdb.set_trace()
+    clwt=None
+    test_eval = None
+    if options.scale_error == 2:
+	clwt = ClassWeight(data_arrays, solver.iter)
+        test_eval = TestNetEvaluator(test_net, net, data_arrays, options)
+    
+    test_eval2 = None
+    if (options.test_net != None):
+        test_eval2 = TestNetEvaluator(test_net, net, train_data_arrays, options)
+        
+    input_dims, output_dims, input_padding = get_spatial_io_dims(net)
+    fmaps_in, fmaps_out = get_fmap_io_dims(net)
+
+    print('input_dims:', input_dims)
+    print('output_dims:', output_dims)
+    print('input_padding:', input_padding)
+    print('fmaps_out:', fmaps_out)
+
+    dims = len(output_dims)
+
+
+    losses = []
+    
+    shapes = []
+    # Raw data slice input         (n = 1, f = 1, spatial dims)
+    shapes += [[1,fmaps_in] + input_dims]
+    # Label data slice input    (n = 1, f = #edges, spatial dims)
+    shapes += [[1,fmaps_out] + output_dims]
+    
+    if (options.loss_function == 'malis'):
+        # Connected components input   (n = 1, f = 1, spatial dims)
+        shapes += [[1,1] + output_dims]
+    if (options.loss_function == 'euclid'):
+        # Error scale input   (n = 1, f = #edges, spatial dims)
+        shapes += [[1,fmaps_out] + output_dims]
+    # Nhood specifications         (n = #edges, f = 3)
+    if (('nhood' in data_arrays[0]) and (options.loss_function == 'malis')):
+        shapes += [[1,1] + list(np.shape(data_arrays[0]['nhood']))]
+
+    net_io = NetInputWrapper(net, shapes)
+    
+    weight_vec = []
+    if (options.loss_function == 'softmax' or options.loss_function == 'euclid') and options.scale_error == 1:
+	#pdb.set_trace()
+	weight_vec = class_balance_distribution(data_arrays[0]['label'])
+	#weight_vec[2] = weight_vec[1]*4.0 #for 3 class, inversed during weighting
+    
+    #pdb.set_trace()
+    # Loop from current iteration to last iteration
+    for i in range(solver.iter, solver.max_iter):
+        
+        if (options.test_net != None and i % options.test_interval == 0 and i>1):
+	    #pdb.set_trace()
+            test_eval2.evaluate(i)
+            if options.scale_error == 2:
+		test_eval.evaluate(i)
+		clwt.recompute_weight(test_eval.pred_arrays_samesize, i)
+
+        
+        # First pick the dataset to train with
+        dataset = randint(0, len(data_arrays) - 1)
+
+	if dims==3:
+	    offsets = []
+	    for j in range(0, dims):
+		offsets.append(randint(0, data_arrays[dataset]['data'].shape[1+j] - (output_dims[j] + input_padding[j])))
+		
+	    # These are the raw data elements
+	    #pdb.set_trace()        
+	    data_slice = slice_data(data_arrays[dataset]['data'], [0]+offsets, [fmaps_in]+[output_dims[di] + input_padding[di] for di in range(0, dims)])
+	    label_slice = slice_data(data_arrays[dataset]['label'], [0] + [offsets[di] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out] + output_dims)
+	    
+	    if options.scale_error ==2 and clwt != None:
+		weight_slice = slice_data(clwt.class_weights[dataset], [0] + [offsets[di] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out] + output_dims)
+
+	elif dims==2:
+	    offsets = []
+	    offsets.append(randint(0,data_arrays[dataset]['data'].shape[1]-1))
+	    for j in range(0, dims):
+		offsets.append(randint(0, data_arrays[dataset]['data'].shape[1+j] - (output_dims[j] + input_padding[j])))
+		
+	    # These are the raw data elements
+	    #pdb.set_trace()        
+	    data_slice = slice_data(data_arrays[dataset]['data'], [0]+offsets, [fmaps_in,1]+[output_dims[di] + input_padding[di] for di in range(0, dims)])
+	    label_slice = slice_data(data_arrays[dataset]['label'], [0, offsets[0]] + [offsets[di+1] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out,1] + output_dims)
+	  
+	    data_slice = np.squeeze(data_slice)
+	    label_slice = np.squeeze(label_slice)
+        #offsets=np.zeros(dims);
+	    if (data_slice.shape[0]<1) or (label_slice.shape[0]<2):
+		pp=1
+
+        #print('pid:', os.getpid(), 'offsets:', offsets, 'dims:', dims, 'shape:', data_arrays[dataset]['data'].shape)
+        #exit(1)
+        
+
+	#pdb.set_trace()
+	#if(np.unique(label_slice).shape[0]<2):
+	 #   continue;	
+	
+        # transform the input
+        # this code assumes that the original input pixel values are scaled between (0,1)
+        if 'transform' in data_arrays[dataset]:
+            # print('Pre:',(data_slice.min(),data_slice.mean(),data_slice.max()))
+            data_slice_mean = data_slice.mean()
+            lo, hi = data_arrays[dataset]['transform']['scale']
+            data_slice = data_slice_mean + (data_slice-data_slice_mean)*np.random.uniform(low=lo,high=hi)
+            lo, hi = data_arrays[dataset]['transform']['shift']
+            data_slice = data_slice + np.random.uniform(low=lo,high=hi)
+            # print('Post:',(data_slice.min(),data_slice.mean(),data_slice.max()))
+            data_slice = np.clip(data_slice, 0.0, 0.95)
+      
+        if options.loss_function == 'malis':
+	    components_slice,ccSizes = malis.connected_components_affgraph(label_slice.astype(int32), data_arrays[dataset]['nhood'])
+            # Also recomputing the corresponding labels (connected components)
+            net_io.setInputs([data_slice, label_slice, components_slice, data_arrays[0]['nhood']])
+            
+        if options.loss_function == 'euclid':
+            ###if(options.scale_error == True):
+                ###frac_pos = np.clip(label_slice.mean(),0.05,0.95) #for binary labels
+                ###w_pos = 1.0/(2.0*frac_pos)
+                ###w_neg = 1.0/(2.0*(1.0-frac_pos))
+            ###else:
+                ###w_pos = 1
+                ###w_neg = 1          
+                
+            ###net_io.setInputs([data_slice, label_slice, error_scale(label_slice,w_neg,w_pos)])
+	    if(options.scale_error == 3):
+		frac_pos = np.clip(label_slice.mean(),0.01,0.99) #for binary labels
+		w_pos = 1.0/(2.0*frac_pos)
+		w_neg = 1.0/(2.0*(1.0-frac_pos))
+		
+		net_io.setInputs([data_slice, label_slice, error_scale(label_slice,w_neg,w_pos)])
+		
+            elif(options.scale_error == 1):
+		frac_pos = weight_vec[0]
+		w_pos = 1./frac_pos
+
+		label_weights = error_scale_overall(label_slice, weight_vec)
+		net_io.setInputs([data_slice, label_slice, label_weights])
+		
+	    elif options.scale_error == 2:
+		net_io.setInputs([data_slice, label_slice, weight_slice])
+	      
+            elif options.scale_error == 0:
+		net_io.setInputs([data_slice, label_slice])
+
+        if options.loss_function == 'softmax':
+	    net_io.setInputs([data_slice, label_slice])
+    
+        #pdb.set_trace()
+
+        print('data_slice dims:', data_slice.shape)
+
+        # Single step
+        n_slices = output_dims[-1]
+        loss = solver.step(1) #n_slices)
+        #for i in range(n_slices):
+        #    loss = solver.stepForward(1)
+        #solver.stepBackward()
+
+        # sanity_check_net_blobs(net)
+        
+        while gc.collect():
+            pass
+
+
+        if (options.loss_function == 'euclid' or options.loss_function == 'euclid_aniso') and options.scale_error ==1 :
+            print("[Iter %i] Loss: %f, frac_pos=%f, w_pos=%f" % (i,loss,frac_pos,w_pos))
+        else:
+            print("[Iter %i] Loss: %f" % (i,loss))
+        # TODO: Store losses to file
+        losses += [loss]
+
+        if hasattr(options, 'loss_snapshot') and ((i % options.loss_snapshot) == 0):
+            io.savemat('loss.mat',{'loss':losses})
+
+        #pdb.set_trace()
+
+
+def train(solver, test_net, data_arrays, train_data_arrays, options):
+    caffe.select_device(options.train_device, False)
+
+    print('====> in training....')
+
     net = solver.net
     net.debug_info = True
 
     #pdb.set_trace()
-    # TODO: purpose of scale?
-    #------------------------------------------------------------------------
+    '''
     clwt=None
     test_eval = None
     if options.scale_error == 2:
@@ -737,79 +928,107 @@ def train(solver, test_net, data_arrays, test_data_arrays, options):
 
     test_eval2 = None
     if (options.test_net != None):
-        test_eval2 = TestNetEvaluator(test_net, net, test_data_arrays, options)
+        test_eval2 = TestNetEvaluator(test_net, net, train_data_arrays, options)
+    '''
 
     input_dims, output_dims, input_padding = get_spatial_io_dims(net)
     fmaps_in, fmaps_out = get_fmap_io_dims(net)
 
+    print('input_dims:', input_dims)
+    print('output_dims:', output_dims)
+    print('input_padding:', input_padding)
+    print('fmaps_out:', fmaps_out)
+
     dims = len(output_dims)
 
-    # Output dimension must be 3. This code is training based on 3D input volume
-    assert dims == 3, 'Invalid output dimension, expected 3 but received %d'%(dim)
 
     losses = []
-    shapes = []
 
+    shapes = []
     # Raw data slice input         (n = 1, f = 1, spatial dims)
     shapes += [[1,fmaps_in] + input_dims]
-
     # Label data slice input    (n = 1, f = #edges, spatial dims)
     shapes += [[1,fmaps_out] + output_dims]
 
     if (options.loss_function == 'malis'):
         # Connected components input   (n = 1, f = 1, spatial dims)
         shapes += [[1,1] + output_dims]
-
     if (options.loss_function == 'euclid'):
         # Error scale input   (n = 1, f = #edges, spatial dims)
         shapes += [[1,fmaps_out] + output_dims]
-
-    # Nhood specifications         (n = #edges, f = 3)
+        # Nhood specifications         (n = #edges, f = 3)
     if (('nhood' in data_arrays[0]) and (options.loss_function == 'malis')):
         shapes += [[1,1] + list(np.shape(data_arrays[0]['nhood']))]
 
     net_io = NetInputWrapper(net, shapes)
 
     weight_vec = []
-    if (options.loss_function == 'softmax' or options.loss_function == 'euclid') and options.scale_error == 1:
-        weight_vec = class_balance_distribution(data_arrays[0]['label'])
 
+    if (options.loss_function == 'softmax' or options.loss_function == 'euclid') and options.scale_error == 1:
+        #pdb.set_trace()
+        weight_vec = class_balance_distribution(data_arrays[0]['label'])
+        #weight_vec[2] = weight_vec[1]*4.0 #for 3 class, inversed during weighting
+
+        #pdb.set_trace()
+
+
+    '''
+    dims3d = dims + 1
+    output_dims3d = output_dims + [output_dims[-1]]
+    input_padding3d = input_padding + [input_padding[-1]]
+    output_dims3d = output_dims + [output_dims[-1]]
+    '''
+
+    n_slices = output_dims[-1]
+    i_slice = 0
+ 
     # Loop from current iteration to last iteration
     for i in range(solver.iter, solver.max_iter):
 
-        if (len(losses) > 0 and options.test_net != None and i % options.test_interval == 0 and i>1):
-            #if True:
-            print('begin test...')
+        '''
+        if (options.test_net != None and i % options.test_interval == 0 and i>1):
             #pdb.set_trace()
             test_eval2.evaluate(i)
             if options.scale_error == 2:
                 test_eval.evaluate(i)
                 clwt.recompute_weight(test_eval.pred_arrays_samesize, i)
-            print('done testing...')
-            #pdb.set_trace()
-
-            while gc.collect():
-                pass
+        '''
 
         # First pick the dataset to train with
         dataset = randint(0, len(data_arrays) - 1)
 
-        offsets = []
-        #print ('data shape:', data_arrays[dataset]['data'].shape)
-        #print ('outputdims:', output_dims)
-        #print ('inputpadding:', input_padding)
-        for j in range(0, dims):
-            offsets.append(randint(0, data_arrays[dataset]['data'].shape[1+j] - (output_dims[j] + input_padding[j])))
-            #offsets.append(0)
+        #print('dataset shape:', data_arrays[dataset]['data'].shape)
 
-        # Extract volume from the input data.
-        # These are the raw data elements
-        data_slice = slice_data(data_arrays[dataset]['data'], [0]+offsets, [fmaps_in]+[output_dims[di] + input_padding[di] for di in range(0, dims)])
-        label_slice = slice_data(data_arrays[dataset]['label'], [0] + [offsets[di] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out] + output_dims)
+        if i_slice == 0 or i_slice == n_slices:
+            i_slice = 0
+            offsets = []
+            for j in range(0, dims):
+                offsets.append(randint(0, data_arrays[dataset]['data'].shape[1+j] - (output_dims[j] + input_padding[j])))
 
-        if options.scale_error ==2 and clwt != None:
-            weight_slice = slice_data(clwt.class_weights[dataset], [0] + [offsets[di] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out] + output_dims)
+            data_slice = slice_data(data_arrays[dataset]['data'], [0]+offsets, [fmaps_in]+[output_dims[di] + input_padding[di] for di in range(0, dims)])
+            label_slice = slice_data(data_arrays[dataset]['label'], [0] + [offsets[di] + int(math.ceil(input_padding[di] / float(2))) for di in range(0, dims)], [fmaps_out] + output_dims)
+            print(data_slice.shape)
+            print(label_slice.shape)
 
+        #data_slice = np.squeeze(data_slice)
+        label_slice = np.squeeze(label_slice)
+
+        #print(label_slice)
+        #offsets=np.zeros(dims);
+        if (data_slice.shape[0]<1) or (label_slice.shape[0]<2):
+            pp=1
+        
+        # transform the input
+        # this code assumes that the original input pixel values are scaled between (0,1)
+        if 'transform' in data_arrays[dataset]:
+            # print('Pre:',(data_slice.min(),data_slice.mean(),data_slice.max()))
+            data_slice_mean = data_slice.mean()
+            lo, hi = data_arrays[dataset]['transform']['scale']
+            data_slice = data_slice_mean + (data_slice-data_slice_mean)*np.random.uniform(low=lo,high=hi)
+            lo, hi = data_arrays[dataset]['transform']['shift']
+            data_slice = data_slice + np.random.uniform(low=lo,high=hi)
+            # print('Post:',(data_slice.min(),data_slice.mean(),data_slice.max()))
+            data_slice = np.clip(data_slice, 0.0, 0.95)
 
         if options.loss_function == 'malis':
             components_slice,ccSizes = malis.connected_components_affgraph(label_slice.astype(int32), data_arrays[dataset]['nhood'])
@@ -818,6 +1037,7 @@ def train(solver, test_net, data_arrays, test_data_arrays, options):
 
         if options.loss_function == 'euclid':
 
+            ###net_io.setInputs([data_slice, label_slice, error_scale(label_slice,w_neg,w_pos)])
             if(options.scale_error == 3):
                 frac_pos = np.clip(label_slice.mean(),0.01,0.99) #for binary labels
                 w_pos = 1.0/(2.0*frac_pos)
@@ -841,35 +1061,30 @@ def train(solver, test_net, data_arrays, test_data_arrays, options):
         if options.loss_function == 'softmax':
             net_io.setInputs([data_slice, label_slice])
 
-        # assuming isotropic volume for now
-        n_slices = output_dims[-1]
+        #pdb.set_trace()
 
-        #print('===> before step <===')
+        #print('training slice#: ', i_slice)
+
         # Single step
-        #loss = solver.stepForward( n_slices )
-        #solver.stepBackward( n_slices )
-        #loss = solver.stepParallel( n_slices )
-        loss = solver.stepForward( n_slices )
-        solver.stepBackward( 1 )
-        #solver.step(1);
-        #loss = solver.step(1)
-        #loss = 0.0
-        #for i in range(n_slices):
-        #    loss += solver.stepForward(1)
+        n_slices = output_dims[-1]
+        #loss = solver.stepForward(1)
+        loss = solver.stepParallel( n_slices )
+        i_slice = n_slices
 
-        #for i in range(n_slices):
+        # do backward when all slices have been processed.
+        #if i_slice == n_slices:
         #    solver.stepBackward(1)
 
-        #if i==1000:
-        #    print('exiting...')
-        #    exit(1)
-        #print('===> after step <===')
-        #pdb.set_trace()
-        #exit(1)
+        #loss = solver.step(1) #n_slices)
+        #for i in range(n_slices):
+        #    loss = solver.stepForward(1)
+        #solver.stepBackward()
+
         # sanity_check_net_blobs(net)
 
         while gc.collect():
             pass
+
 
         if (options.loss_function == 'euclid' or options.loss_function == 'euclid_aniso') and options.scale_error ==1 :
             print("[Iter %i] Loss: %f, frac_pos=%f, w_pos=%f" % (i,loss,frac_pos,w_pos))
@@ -878,8 +1093,8 @@ def train(solver, test_net, data_arrays, test_data_arrays, options):
 
         # TODO: Store losses to file
         losses += [loss]
-
         if hasattr(options, 'loss_snapshot') and ((i % options.loss_snapshot) == 0):
             io.savemat('loss.mat',{'loss':losses})
+        #pdb.set_trace()
 
-    print('done training...')
+

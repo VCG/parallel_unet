@@ -6,65 +6,82 @@ from numpy import float32, int32, uint8, dtype
 
 # Load PyGreentea
 # Relative path to where PyGreentea resides
+#pygt_path = '../../PyGreentea'
 pygt_path = './PyGreentea'
 sys.path.append(pygt_path)
 import PyGreentea as pygt
 
-
-# Create configuration structure for the networks
-#-----------------------------------------------------------------------
+# Create the network we want
 netconf = pygt.netgen.NetConf()
 netconf.ignore_conv_buffer = True
 netconf.use_batchnorm = False
 netconf.dropout = 0.0
-netconf.fmap_start = 24
+netconf.fmap_start = 10
 netconf.u_netconfs[0].unet_fmap_inc_rule = lambda fmaps: int(math.ceil(fmaps * 3))
 netconf.u_netconfs[0].unet_fmap_dec_rule = lambda fmaps: int(math.ceil(fmaps / 3))
-netconf.u_netconfs[0].unet_downsampling_strategy = [[2,2],[2,2],[2,2]]
-netconf.u_netconfs[0].unet_depth = 3
+netconf.u_netconfs[0].unet_downsampling_strategy = [[2,2],[2,2],[2,2],[2,2]]
+netconf.u_netconfs[0].unet_depth = 4
+netconf.fmap_output = 1
+netconf.fmap_output3d = 3
 
-#netconf.input_shape = [124,124,124]
-#netconf.output_shape = [36,36,36]
-#netconf.input_shape = [100,100,100]
-#netconf.output_shape = [12,12,12]
-netconf.input_shape = [204,204,204]
-netconf.output_shape = [116,116,116]
-#netconf.input_shape = [404,404,404]
-#netconf.output_shape = [316,316,316]
+netconf.input_shape = [236,236]
+netconf.output_shape = [52,52]
 
-# enable which networks to generate for training
-train = {'malis':False, 'euclid':True}
+netconf.input_shape3d = [236,236,236]
+netconf.output_shape3d = [52,52,52]
 
-# Create malis parallel network
-#-----------------------------------------------------------------------
-if train['malis']:
-    netconf.loss_function = 'malis'
-    train_net_conf = pygt.netgen.create_train_net( netconf )
-    with open('net_train_malis.prototxt', 'w') as f:
-        print(train_net_conf, file=f)
+#netconf.input_shape = [100,100]
+#netconf.output_shape = [12,12]
 
-# Create euclidean parallel network
-#-----------------------------------------------------------------------
-if train['euclid']:
-    netconf.loss_function = 'euclid'
-    train_net_conf = pygt.netgen.create_train_net( netconf )
-    with open('net_train_euclid.prototxt', 'w') as f:
-        print(train_net_conf, file=f)
+print ('Input shape: %s' % netconf.input_shape)
+print ('Output shape: %s' % netconf.output_shape)
+print ('Feature maps: %s' % netconf.fmap_start)
 
-# Create test network
-#-----------------------------------------------------------------------
-test_net_conf = pygt.netgen.create_test_net( netconf )
+netconf.loss_function = "euclid"
+train_net_conf_euclid, test_net_conf = pygt.netgen.create_nets(netconf)
+netconf.loss_function = "malis"
+train_net_conf_malis, test_net_conf = pygt.netgen.create_nets(netconf)
+
+with open('net_train_euclid.prototxt', 'w') as f:
+    print(train_net_conf_euclid, file=f)
+with open('net_train_malis.prototxt', 'w') as f:
+    print(train_net_conf_malis, file=f)
 with open('net_test.prototxt', 'w') as f:
     print(test_net_conf, file=f)
 
 
-# CREATE BIGGER NETWORK FOR TESTING
-#-----------------------------------------------------------------------
-netconf.input_shape = [204,204,204]
-netconf.output_shape = [116,116,116]
-#netconf.input_shape = [124,124,124]
-#netconf.output_shape = [36,36,36]
 
+# #### Make a big test proto
+# # Biggest possible network for testing on 12 GB
+# netconf.ignore_conv_buffer = True
+# netconf.mem_global_limit = 8 * 1024 * 1024 * 1024
+# mode = pygt.netgen.caffe_pb2.TEST
+# shape_min = [50,100,100]
+# shape_max = [100,300,300]
+# #constraints = [None, lambda x: x[0], lambda x: x[1]]
+# constraints = [None, lambda x: x[0], lambda x: x[1]]
+# 
+# inshape,outshape,fmaps = pygt.netgen.compute_valid_io_shapes(netconf,mode,shape_min,shape_max,constraints=constraints)
+# 
+# # We choose the maximum that still gives us 20 fmaps:
+# index = [n for n, i in enumerate(fmaps) if i>=netconf.fmap_start][-1]
+# print("Index to use: %s" % index)
+# 
+# # Some patching to allow our new parameters
+# netconf.input_shape = inshape[index]
+# netconf.output_shape = outshape[index]
+
+netconf.input_shape = [492,492]
+netconf.output_shape = [308,308]
+netconf.input_shape3d = [492,492,492]
+netconf.output_shape3d = [308,308,308]
+
+'''
+netconf.input_shape = [204,204]
+netconf.output_shape = [116,116]
+netconf.input_shape3d = [204,204,204]
+netconf.output_shape3d = [116,116,116]
+'''
 
 # Workaround to allow any size (train net unusably big)
 netconf.mem_global_limit = 200 * 1024 * 1024 * 1024
@@ -73,6 +90,9 @@ netconf.mem_buf_limit = 200 * 1024 * 1024 * 1024
 netconf.loss_function = "euclid"
 
 # Generate the nework, store it
-test_net_big_conf = pygt.netgen.create_test_net( netconf )
+train_net_big_conf, test_net_big_conf = pygt.netgen.create_nets(netconf)
+
 with open('net_test_big.prototxt', 'w') as f:
     print(test_net_big_conf, file=f)
+
+
